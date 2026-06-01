@@ -91,10 +91,11 @@ It writes a snapshot (only if the tool set changed) and shows a macOS notificati
 This repo is also a Claude Code skill (the `SKILL.md` at its root). To let Claude Code run it for you, symlink the cloned folder into your skills directory:
 
 ```bash
+mkdir -p ~/.claude/skills
 ln -s "$(pwd)" ~/.claude/skills/claude-code-tools
 ```
 
-Restart Claude Code so it picks up the skill. You can then ask things like *"what tools does Claude Code have?"* or *"did any tools change in this release?"* and it will run this skill (see [SKILL.md](SKILL.md) for the exact triggers and every flag). You can always run the scripts directly instead.
+(The `mkdir -p` matters if you've never added a skill before — the `~/.claude/skills` directory may not exist yet.) Restart Claude Code so it picks up the skill. You can then ask things like *"what tools does Claude Code have?"* or *"did any tools change in this release?"* and it will run this skill (see [SKILL.md](SKILL.md) for the exact triggers and every flag). You can always run the scripts directly instead.
 
 > Pasting this repo's GitHub URL into an assistant does **not** install anything on its own. You (or an agent with shell access) must clone the repo and run the steps above.
 

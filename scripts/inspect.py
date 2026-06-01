@@ -534,6 +534,12 @@ def inspect(snapshot_dir: Path) -> dict:
     cli_expected, cli_prov = expected_for("cli", snapshot_dir, taps)
     desk_expected, desk_prov = expected_for("desktop", snapshot_dir, taps)
 
+    # CLI and embedded-CLI scanning both shell out to `strings`. If it isn't
+    # installed (a Mac without Xcode Command Line Tools), those scans return
+    # nothing — which would wrongly read as "all tools removed". Detect it once
+    # so we can render an honest "couldn't scan" state instead.
+    strings_ok = shutil.which("strings") is not None
+
     cli_link, cli_real, cli_ver = find_cli()
     cli_installed = cli_link is not None
     cli_section: dict = {
@@ -544,8 +550,11 @@ def inspect(snapshot_dir: Path) -> dict:
         "reference": latest_reference("cli", cli_ver),
         "expected_provenance": cli_prov,
     }
-    if cli_real and Path(cli_real).is_file():
+    if cli_real and Path(cli_real).is_file() and strings_ok:
         cli_section.update(scan(extract_strings(cli_real), expected=cli_expected, line_exact=True))
+    elif cli_real and Path(cli_real).is_file():
+        # Binary is right there but we can't read it — `strings` is missing.
+        cli_section.update(present=[], missing_vs_expected=[], scan_unavailable=True)
     elif cli_installed:
         # We found a `claude` launcher on PATH but couldn't read the real
         # binary behind it (e.g. it's a wrapper script, not the bun binary).
@@ -582,9 +591,13 @@ def inspect(snapshot_dir: Path) -> dict:
     if bundle:
         bundle_scan = scan(read_bytes(bundle), expected=desk_expected, line_exact=False)
         bundle_present = set(bundle_scan["present"])
-    if embed_bin and Path(embed_bin).is_file():
+    if embed_bin and Path(embed_bin).is_file() and strings_ok:
         embed_scan = scan(extract_strings(embed_bin), expected=desk_expected, line_exact=True)
         embed_present = set(embed_scan["present"])
+    elif embed_bin and Path(embed_bin).is_file():
+        # Embedded CLI is present but `strings` is missing, so we could only
+        # read the Electron bundle. Flag the partial scan for an honest note.
+        desktop_section["scan_partial"] = True
 
     if bundle or embed_bin:
         all_present = bundle_present | embed_present
@@ -706,14 +719,35 @@ def render_table(snapshot: dict, eager: set[str] | None, deferred: set[str] | No
     # the `installed` field) rendering as before.
     cli_installed = (snapshot.get("cli") or {}).get("installed", True)
     desk_installed = (snapshot.get("desktop") or {}).get("installed", True)
-    rows = ["| Tool group | CLI binary | Desktop (bundle + embedded CLI) | Live session |",
-            "|------|------------|----------------|--------------|"]
+    # The CLI was found but couldn't be read (e.g. `strings` is missing).
+    # Render it as "?" with an explanatory note instead of an empty column
+    # that would read as "all tools removed".
+    cli_scannable = not (snapshot.get("cli") or {}).get("scan_unavailable")
+    # The live-session column is only meaningful when the caller tells us
+    # what the running session actually loaded (--eager / --deferred, usually
+    # via the monitor-claude-code companion). In the common standalone case we
+    # drop the column entirely rather than print one that's always "(unknown)".
+    show_live = eager is not None or deferred is not None
+    if show_live:
+        rows = ["| Tool group | CLI binary | Desktop (bundle + embedded CLI) | Live session |",
+                "|------|------------|----------------|--------------|"]
+    else:
+        rows = ["| Tool group | CLI binary | Desktop (bundle + embedded CLI) |",
+                "|------|------------|----------------|"]
     for label, tools in GROUPS:
         first = f"{label}: {', '.join(tools)}"
-        cli_cell = _summarize_static(tools, cli_set) if cli_installed else "—"
+        if not cli_installed:
+            cli_cell = "—"
+        elif not cli_scannable:
+            cli_cell = "?"
+        else:
+            cli_cell = _summarize_static(tools, cli_set)
         desk_cell = _summarize_static(tools, desk_set) if desk_installed else "—"
-        live_cell = _summarize_live(tools, eager or set(), deferred or set()) if eager is not None or deferred is not None else "(unknown)"
-        rows.append(f"| {first} | {cli_cell} | {desk_cell} | {live_cell} |")
+        if show_live:
+            live_cell = _summarize_live(tools, eager or set(), deferred or set())
+            rows.append(f"| {first} | {cli_cell} | {desk_cell} | {live_cell} |")
+        else:
+            rows.append(f"| {first} | {cli_cell} | {desk_cell} |")
     # Trailing footnote: tools observed in this run but not represented in
     # any group above. These are the candidates for adding to GROUPS.
     grouped = {t for _, ts in GROUPS for t in ts}
@@ -775,10 +809,22 @@ def render_table(snapshot: dict, eager: set[str] | None, deferred: set[str] | No
             "shows `—` (not installed, not removed tools). Put `claude` on your "
             "PATH to scan it."
         )
+    elif not cli_scannable:
+        absent_lines.append(
+            "⚠️  Found the Claude Code **CLI** but couldn't read it — the `strings` "
+            "tool is missing, so the CLI column shows `?`. Install the Xcode "
+            "Command Line Tools to fix it: `xcode-select --install`."
+        )
     if not desk_installed:
         absent_lines.append(
             "ℹ️  No Claude **Desktop** app found on this machine — the Desktop "
             "column shows `—` (not installed, not removed tools)."
+        )
+    elif (snapshot.get("desktop") or {}).get("scan_partial"):
+        absent_lines.append(
+            "⚠️  Scanned only the Desktop **Electron bundle** — the `strings` tool "
+            "is missing, so the embedded CLI wasn't read and a few tools may show "
+            "as absent. Install the Xcode Command Line Tools: `xcode-select --install`."
         )
     absent_block = ("\n\n" + "\n".join(absent_lines)) if absent_lines else ""
     return "\n".join(rows) + footer + versions + absent_block + ref_block
@@ -905,11 +951,6 @@ def main(argv: list[str]) -> int:
             snapshot["_diff"] = {"against": prior_path.name, **diff}
 
     if table_mode:
-        if eager is None and deferred is None:
-            print(
-                "warning: --table without --eager/--deferred — live-session column will be blank",
-                file=sys.stderr,
-            )
         print(render_table(snapshot, eager, deferred))
         return 0
 
