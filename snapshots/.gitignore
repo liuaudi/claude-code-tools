@@ -1,0 +1,6 @@
+# Snapshots are generated locally and contain absolute paths from the
+# machine that produced them. They are intentionally not committed — each
+# install builds its own history. The directory is kept so the inspector
+# always has somewhere to write.
+*.json
+!.gitignore

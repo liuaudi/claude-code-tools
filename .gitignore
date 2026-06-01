@@ -1,0 +1,14 @@
+# Generated snapshots — contain absolute paths from the machine that
+# produced them; each install builds its own history.
+snapshots/*.json
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Runtime / logs
+*.log
+*.pid
