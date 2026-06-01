@@ -21,11 +21,12 @@ _CLI 2.1.146_ · _Desktop 1.8555.2 (embedded CLI 2.1.149)_ · _captured 2026-06-
 
 - **"What tools does my Claude Code actually have?"** — answered from the bytes, not from a model's claims.
 - **Compare CLI vs Desktop.** The two surfaces ship different tool sets, and the desktop app bundles its *own* separately-versioned CLI inside itself. This shows the breakdown.
-- **Track changes across releases.** Save a snapshot per version; the next run diffs against it and tells you exactly which tools were added or removed.
+- **Track changes across releases.** Save a snapshot per version; the next run diffs against it and tells you which known tools were added or removed. (Spotting an entirely new tool name needs the optional live companion — see below.)
 
 ## Requirements
 
-- **macOS.** The paths (`~/.local/share/claude`, `/Applications/Claude.app`, the LaunchAgent, `strings`, `open`) are mac-specific.
+- **macOS.** It reads mac-specific locations: the **CLI** is found by looking up `claude` on your `PATH` (with fallbacks to `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`), and the **Desktop app** at `/Applications/Claude.app` or `~/Applications/Claude.app`. The optional watcher uses macOS launchd; `strings` and `open` are mac tools.
+- **At least one of the two installed.** You need the Claude Code CLI, the Desktop app, or both. Whichever you *don't* have shows as `—` ("not installed on this machine") — the scan still reports on whatever you do have, and never mistakes an absent surface for "tools removed."
 - **Python 3.8+** — standard library only, nothing to `pip install`.
 - **`strings`** — ships with the Xcode Command Line Tools (already present on most dev machines; `xcode-select --install` if not).
 - **Node / `npx`** *(optional)* — only the desktop app's Electron-bundle scan uses `npx @electron/asar` to unpack `app.asar` (downloaded on first use, then cached). Without Node, the CLI scan and the desktop *embedded-CLI* scan still work; only the Electron-JS half of the desktop surface is skipped.
@@ -43,14 +44,17 @@ python3 scripts/inspect.py --table
 python3 scripts/inspect.py
 ```
 
-That's it — no setup, no key. The first run works on a clean clone because the skill ships a **baseline list of known tool names** to check the binaries against. As you keep running it across Claude Code updates, it accumulates its own snapshot history and the diff gets richer.
+That's it — no setup, no key. The first run works on a clean clone because the skill ships a **baseline list of known tool names** to check the binaries against.
+
+What that means in practice: standalone, it tells you which of those *known* tools are present or missing in each binary, and — as you run it across Claude Code updates — diffs that set so you see when a known tool is dropped or comes back. The one thing it **can't** do alone is *discover a brand-new tool* Anthropic introduces under a name it's never seen (the compiled CLI is 200 MB of obfuscated strings, so blind discovery is unreliable). To catch new names the moment they ship, pair it with the live companion below — or just add the name to the baseline list in `scripts/inspect.py`.
 
 ### How to read the JSON
 
 Per surface (`cli`, `desktop`) the key fields are:
 
-- **`present`** — tool names found in that binary.
-- **`missing_vs_expected`** — names we expected (from the baseline, your snapshot history, or live taps) but did **not** find. Usually means a tool was removed in this release.
+- **`installed`** — whether that surface exists on this machine at all. When `false`, the surface isn't installed and `present`/`missing_vs_expected` are empty — it does **not** mean tools were removed. (In `--table`, an absent surface shows `—` instead of a column of ❌.)
+- **`present`** — *known* tool names (from the baseline / your history / live taps) confirmed in that binary. New names outside that set aren't discovered standalone — see the note above.
+- **`missing_vs_expected`** — names we expected but did **not** find in this binary. On an installed surface that usually means the tool was removed in this release; it's empty when the surface isn't installed.
 - **`present_by_artifact`** (desktop only) — which tools came from the Electron bundle vs the embedded CLI.
 - **`expected_provenance`** — where each expected name came from: `from_baseline`, `from_snapshots`, `from_live_taps`.
 - **`_diff`** — added/removed since your most recent saved snapshot.

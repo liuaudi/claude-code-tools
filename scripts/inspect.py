@@ -535,20 +535,30 @@ def inspect(snapshot_dir: Path) -> dict:
     desk_expected, desk_prov = expected_for("desktop", snapshot_dir, taps)
 
     cli_link, cli_real, cli_ver = find_cli()
+    cli_installed = cli_link is not None
     cli_section: dict = {
         "path": cli_link,
         "resolved_path": cli_real,
         "version": cli_ver,
+        "installed": cli_installed,
         "reference": latest_reference("cli", cli_ver),
         "expected_provenance": cli_prov,
     }
     if cli_real and Path(cli_real).is_file():
         cli_section.update(scan(extract_strings(cli_real), expected=cli_expected, line_exact=True))
-    else:
+    elif cli_installed:
+        # We found a `claude` launcher on PATH but couldn't read the real
+        # binary behind it (e.g. it's a wrapper script, not the bun binary).
+        # Report the expected tools as unconfirmed — not as removals.
         cli_section.update(present=[], missing_vs_expected=sorted(cli_expected))
+    else:
+        # No Claude Code CLI on this machine at all. Don't pretend every
+        # known tool was "removed" — there's simply nothing to scan.
+        cli_section.update(present=[], missing_vs_expected=[])
 
     app_path, app_ver = find_desktop()
     embed_bin, embed_ver = find_desktop_embedded_cli()
+    desktop_installed = bool(app_path or embed_bin)
     # The Desktop reference is keyed against the embedded CLI's version
     # (that's the binary monitor-claude-code actually captured), not the
     # Electron shell's Marketing version. So compare ref_ver to embed_ver.
@@ -557,6 +567,7 @@ def inspect(snapshot_dir: Path) -> dict:
         "version": app_ver,
         "embedded_cli_path": embed_bin,
         "embedded_cli_version": embed_ver,
+        "installed": desktop_installed,
         "reference": latest_reference("desktop", embed_ver),
         "expected_provenance": desk_prov,
     }
@@ -584,8 +595,15 @@ def inspect(snapshot_dir: Path) -> dict:
             "embedded_cli_only": sorted(embed_present - bundle_present),
             "both": sorted(bundle_present & embed_present),
         }
-    else:
+    elif desktop_installed:
+        # The .app exists but we couldn't read either artifact (e.g. no
+        # Node/npx to unpack the Electron bundle, and no embedded CLI yet).
+        # Report expected tools as unconfirmed rather than removed.
         desktop_section.update(present=[], missing_vs_expected=sorted(desk_expected))
+    else:
+        # No Claude Desktop app on this machine. Nothing to scan — don't
+        # report the whole known tool set as "removed".
+        desktop_section.update(present=[], missing_vs_expected=[])
 
     return {
         "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -683,12 +701,17 @@ def _summarize_live(tools: list[str], eager: set[str], deferred: set[str]) -> st
 def render_table(snapshot: dict, eager: set[str] | None, deferred: set[str] | None) -> str:
     cli_set = _present_set(snapshot.get("cli") or {})
     desk_set = _present_set(snapshot.get("desktop") or {})
+    # Distinguish "surface not installed on this machine" from "installed
+    # but a tool is absent". Default True keeps old snapshots (which predate
+    # the `installed` field) rendering as before.
+    cli_installed = (snapshot.get("cli") or {}).get("installed", True)
+    desk_installed = (snapshot.get("desktop") or {}).get("installed", True)
     rows = ["| Tool group | CLI binary | Desktop (bundle + embedded CLI) | Live session |",
             "|------|------------|----------------|--------------|"]
     for label, tools in GROUPS:
         first = f"{label}: {', '.join(tools)}"
-        cli_cell = _summarize_static(tools, cli_set)
-        desk_cell = _summarize_static(tools, desk_set)
+        cli_cell = _summarize_static(tools, cli_set) if cli_installed else "—"
+        desk_cell = _summarize_static(tools, desk_set) if desk_installed else "—"
         live_cell = _summarize_live(tools, eager or set(), deferred or set()) if eager is not None or deferred is not None else "(unknown)"
         rows.append(f"| {first} | {cli_cell} | {desk_cell} | {live_cell} |")
     # Trailing footnote: tools observed in this run but not represented in
@@ -742,7 +765,23 @@ def render_table(snapshot: dict, eager: set[str] | None, deferred: set[str] | No
             elif ref.get("note"):
                 ref_lines.append(f"⚠️  {label}: {ref['note']}")
     ref_block = ("\n\n" + "\n".join(ref_lines)) if ref_lines else ""
-    return "\n".join(rows) + footer + versions + ref_block
+    # Absent-surface notes — the single most common cross-machine surprise.
+    # A `—` column means "this surface isn't installed here", NOT "every tool
+    # was removed". Spell that out so nobody reads it as a regression.
+    absent_lines: list[str] = []
+    if not cli_installed:
+        absent_lines.append(
+            "ℹ️  No Claude Code **CLI** found on this machine — the CLI column "
+            "shows `—` (not installed, not removed tools). Put `claude` on your "
+            "PATH to scan it."
+        )
+    if not desk_installed:
+        absent_lines.append(
+            "ℹ️  No Claude **Desktop** app found on this machine — the Desktop "
+            "column shows `—` (not installed, not removed tools)."
+        )
+    absent_block = ("\n\n" + "\n".join(absent_lines)) if absent_lines else ""
+    return "\n".join(rows) + footer + versions + absent_block + ref_block
 
 
 def _parse_csv_arg(argv: list[str], flag: str) -> set[str] | None:
